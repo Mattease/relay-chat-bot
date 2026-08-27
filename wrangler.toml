@@ -1,0 +1,32 @@
+name = "relay-chat-bot"
+main = "src/index.ts"
+compatibility_date = "2025-02-24"
+
+# KV：用户 ↔ 话题映射、验证状态、封禁列表
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_YOUR_KV_PREVIEW_ID"
+
+# 非敏感配置（也可用 wrangler secret / dashboard 覆盖）
+[vars]
+# 话题群组 ID（形如 -100xxxxxxxxxx）
+SUPERGROUP_ID = "-100xxxxxxxxxx"
+# 管理员 Telegram User ID，多个用逗号分隔
+ADMIN_UIDS = "123456789"
+# 隐藏管理路径，用于注册 webhook / 初始化
+ADMIN_PATH = "manage_change_me"
+# 是否开启新人验证（true/false）
+VERIFY_ENABLED = "true"
+# 验证有效期（天）
+VERIFY_TTL_DAYS = "30"
+# 每分钟消息上限
+RATE_LIMIT_PER_MIN = "45"
+# 欢迎语（支持 HTML）
+WELCOME_MESSAGE = "你好！请发送消息，我们会尽快回复。"
+# 验证提示
+VERIFY_MESSAGE = "为防止广告骚扰，请先完成人机验证："
+
+# 敏感变量请用 secret 设置，不要写进本文件：
+#   npx wrangler secret put BOT_TOKEN
+#   npx wrangler secret put WEBHOOK_SECRET

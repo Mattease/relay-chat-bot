@@ -1,0 +1,2 @@
+BOT_TOKEN=123456:ABC-DEF
+WEBHOOK_SECRET=random_long_string_for_webhook
