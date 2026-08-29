@@ -15,6 +15,11 @@ export function isAdmin(env: Env, userId: number): boolean {
   return parseAdminIds(env).has(userId);
 }
 
+/** Extract bot command from message text (handles /cmd@BotName) */
+export function parseCommand(text: string): string {
+  return text.trim().split(/\s+/)[0]?.replace(/@\w+$/, "") ?? "";
+}
+
 export function boolEnv(value: string | undefined, fallback = false): boolean {
   if (value == null || value === "") return fallback;
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());

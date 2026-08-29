@@ -1,7 +1,7 @@
 import type { Env } from "../types";
 import type { TgCallbackQuery, TgMessage } from "../telegram/types";
 import { BotService } from "./service";
-import { isAdmin, adminHelp, userCard, escapeHtml } from "../utils/format";
+import { isAdmin, adminHelp, userCard, escapeHtml, parseCommand } from "../utils/format";
 
 export async function handlePrivateMessage(
   env: Env,
@@ -77,12 +77,18 @@ export async function handleGroupMessage(
   const from = msg.from;
   if (!from || from.is_bot) return;
 
-  // Only admins can operate from the group
-  if (!isAdmin(env, from.id)) return;
-
   const threadId = msg.message_thread_id;
   const text = (msg.text ?? "").trim();
-  const command = text.split(/\s+/)[0]?.replace(/@\w+$/, "") ?? "";
+  const command = parseCommand(text);
+
+  // /testreply — handle early so it always gives feedback
+  if (command === "/testreply") {
+    await handleTestReply(env, bot, msg, threadId);
+    return;
+  }
+
+  // Only admins can operate from the group
+  if (!isAdmin(env, from.id)) return;
 
   // System / General topic commands
   if (bot.isGeneralTopic(threadId)) {
@@ -120,31 +126,6 @@ export async function handleGroupMessage(
   }
 
   // Topic admin commands
-  if (command === "/testreply") {
-    const mapped =
-      msg.reply_to_message || msg.external_reply?.message_id != null
-        ? await bot.store.getMappedMessageId(
-            user.userId,
-            "topic",
-            msg.reply_to_message?.message_id ?? msg.external_reply!.message_id!,
-          )
-        : null;
-    const info = {
-      reply_to_message_id: msg.reply_to_message?.message_id ?? null,
-      reply_to_text: msg.reply_to_message?.text?.slice(0, 80) ?? null,
-      external_reply_id: msg.external_reply?.message_id ?? null,
-      external_reply_text: msg.external_reply?.text?.slice(0, 80) ?? null,
-      quote_text: msg.quote?.text?.slice(0, 80) ?? null,
-      mapped_private_id: mapped,
-    };
-    await bot.api.sendMessage(
-      bot.groupId,
-      `<pre>${escapeHtml(JSON.stringify(info, null, 2))}</pre>`,
-      { message_thread_id: threadId, parse_mode: "HTML" },
-    );
-    return;
-  }
-
   if (command === "/info") {
     await bot.api.sendMessage(bot.groupId, userCard(user), {
       message_thread_id: threadId,
@@ -303,4 +284,82 @@ export async function handleCallback(
       { message_thread_id: user.topicId, parse_mode: "HTML" },
     );
   } catch { /* ignore */ }
+}
+
+async function handleTestReply(
+  env: Env,
+  bot: BotService,
+  msg: TgMessage,
+  threadId?: number,
+): Promise<void> {
+  const from = msg.from!;
+
+  if (!isAdmin(env, from.id)) {
+    await bot.api.sendMessage(
+      bot.groupId,
+      `❌ /testreply 仅管理员可用。\n你的 ID: ${from.id}\n配置的 ADMIN_UIDS: ${env.ADMIN_UIDS}`,
+      threadId != null ? { message_thread_id: threadId } : {},
+    );
+    return;
+  }
+
+  if (bot.isGeneralTopic(threadId)) {
+    await bot.api.sendMessage(
+      bot.groupId,
+      [
+        "⚠️ 请在<b>用户话题</b>里使用 /testreply，不是 General 话题。",
+        "",
+        "步骤：",
+        "1. 点进某个用户的话题",
+        "2. 让用户发一条消息",
+        "3. 长按该消息 → 回复",
+        "4. 输入 /testreply 发送",
+      ].join("\n"),
+      { message_thread_id: threadId, parse_mode: "HTML" },
+    );
+    return;
+  }
+
+  if (!threadId) {
+    await bot.api.sendMessage(bot.groupId, "❌ 未检测到话题 ID，请在 Forum 话题内使用。");
+    return;
+  }
+
+  const user = await bot.store.getUserByTopic(threadId);
+  if (!user) {
+    await bot.api.sendMessage(
+      bot.groupId,
+      `❌ 话题 ${threadId} 未关联用户。请确认在用户话题内操作。`,
+      { message_thread_id: threadId },
+    );
+    return;
+  }
+
+  const replyId = msg.reply_to_message?.message_id ?? msg.external_reply?.message_id ?? null;
+  const mapped =
+    replyId != null
+      ? await bot.store.getMappedMessageId(user.userId, "topic", replyId)
+      : null;
+
+  const info = {
+    reply_to_message_id: msg.reply_to_message?.message_id ?? null,
+    reply_to_text: msg.reply_to_message?.text?.slice(0, 80) ?? null,
+    external_reply_id: msg.external_reply?.message_id ?? null,
+    external_reply_text: msg.external_reply?.text?.slice(0, 80) ?? null,
+    quote_text: msg.quote?.text?.slice(0, 80) ?? null,
+    mapped_private_id: mapped,
+    topic_id: threadId,
+    your_user_id: from.id,
+  };
+
+  const body = JSON.stringify(info, null, 2);
+  try {
+    await bot.api.sendMessage(
+      bot.groupId,
+      `<pre>${escapeHtml(body)}</pre>`,
+      { message_thread_id: threadId, parse_mode: "HTML" },
+    );
+  } catch {
+    await bot.api.sendMessage(bot.groupId, body, { message_thread_id: threadId });
+  }
 }
