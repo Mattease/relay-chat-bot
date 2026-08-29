@@ -57,6 +57,7 @@ export interface TgMessage {
   reply_to_message?: TgMessage;
   external_reply?: TgExternalReply;
   quote?: TgTextQuote;
+  entities?: Array<{ type: string; offset: number; length: number }>;
   is_topic_message?: boolean;
   forum_topic_created?: { name: string; icon_color: number };
   new_chat_members?: TgUser[];

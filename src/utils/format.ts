@@ -20,6 +20,22 @@ export function parseCommand(text: string): string {
   return text.trim().split(/\s+/)[0]?.replace(/@\w+$/, "") ?? "";
 }
 
+export function parseCommandFromMessage(msg: {
+  text?: string;
+  caption?: string;
+  entities?: Array<{ type: string; offset: number; length: number }>;
+}): string {
+  const raw = (msg.text ?? msg.caption ?? "").trim();
+  if (raw) return parseCommand(raw);
+
+  for (const entity of msg.entities ?? []) {
+    if (entity.type === "bot_command" && msg.text) {
+      return msg.text.slice(entity.offset, entity.offset + entity.length).replace(/@\w+$/, "");
+    }
+  }
+  return "";
+}
+
 export function boolEnv(value: string | undefined, fallback = false): boolean {
   if (value == null || value === "") return fallback;
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
@@ -90,7 +106,8 @@ export function adminHelp(): string {
     `/open — 重新打开会话`,
     `/reset — 重置验证（要求用户重新验证）`,
     `/retopic — 删除并重建话题`,
-    `/testreply — 调试：查看回复字段（需回复某条消息后发送）`,
+    `/testreply — 调试回复字段（用户话题内，回复消息后发送）`,
+    `/ping — 检查 bot 是否在线（任意位置可发）`,
     ``,
     `<b>系统话题（General）命令</b>`,
     `/help — 显示本帮助`,
