@@ -1,6 +1,7 @@
 import type {
   InlineKeyboardMarkup,
   ParseMode,
+  ReplyParameters,
   TgForumTopic,
   TgMessage,
 } from "./types";
@@ -63,7 +64,7 @@ export class TelegramApi {
       message_thread_id?: number;
       caption?: string;
       parse_mode?: ParseMode;
-      reply_to_message_id?: number;
+      reply_parameters?: ReplyParameters;
     } = {},
   ): Promise<{ message_id: number }> {
     return this.call("copyMessage", {

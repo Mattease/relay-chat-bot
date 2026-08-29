@@ -19,6 +19,13 @@ export interface TgChat {
   is_forum?: boolean;
 }
 
+export interface ReplyParameters {
+  message_id: number;
+  chat_id?: number | string;
+  allow_sending_without_reply?: boolean;
+  quote?: string;
+}
+
 export interface TgMessage {
   message_id: number;
   from?: TgUser;
@@ -28,6 +35,7 @@ export interface TgMessage {
   text?: string;
   caption?: string;
   reply_to_message?: TgMessage;
+  external_reply?: { message_id?: number; chat?: TgChat; origin?: unknown };
   is_topic_message?: boolean;
   forum_topic_created?: { name: string; icon_color: number };
   new_chat_members?: TgUser[];

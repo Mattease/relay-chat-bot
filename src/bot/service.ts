@@ -124,10 +124,13 @@ export class BotService {
 
   async relayUserToTopic(user: UserRecord, msg: TgMessage): Promise<void> {
     const replyToTopicId = await this.resolveReplyTarget(user.userId, msg, "private");
-    const copied = await this.api.copyMessage(this.groupId, msg.chat.id, msg.message_id, {
-      message_thread_id: user.topicId,
-      ...(replyToTopicId != null ? { reply_to_message_id: replyToTopicId } : {}),
-    });
+    const copied = await this.relayCopy(
+      this.groupId,
+      msg.chat.id,
+      msg.message_id,
+      { message_thread_id: user.topicId },
+      replyToTopicId,
+    );
     await this.store.saveMessageMap(user.userId, msg.message_id, copied.message_id);
     user.messageCount += 1;
     await this.store.saveUser(user);
@@ -136,11 +139,38 @@ export class BotService {
 
   async relayTopicToUser(user: UserRecord, msg: TgMessage): Promise<void> {
     const replyToPrivateId = await this.resolveReplyTarget(user.userId, msg, "topic");
-    const copied = await this.api.copyMessage(user.userId, msg.chat.id, msg.message_id, {
-      ...(replyToPrivateId != null ? { reply_to_message_id: replyToPrivateId } : {}),
-    });
+    const copied = await this.relayCopy(
+      user.userId,
+      msg.chat.id,
+      msg.message_id,
+      {},
+      replyToPrivateId,
+    );
     await this.store.saveMessageMap(user.userId, copied.message_id, msg.message_id);
     await this.store.incrStat("messages_out");
+  }
+
+  /** Copy with native reply bubble; fall back to plain copy if reply target is stale */
+  private async relayCopy(
+    toChatId: number,
+    fromChatId: number,
+    messageId: number,
+    baseOpts: { message_thread_id?: number },
+    replyTargetId: number | null,
+  ): Promise<{ message_id: number }> {
+    if (replyTargetId == null) {
+      return this.api.copyMessage(toChatId, fromChatId, messageId, baseOpts);
+    }
+
+    try {
+      return await this.api.copyMessage(toChatId, fromChatId, messageId, {
+        ...baseOpts,
+        reply_parameters: { message_id: replyTargetId },
+      });
+    } catch (err) {
+      console.warn("relay copy with reply failed, retrying without reply", err);
+      return this.api.copyMessage(toChatId, fromChatId, messageId, baseOpts);
+    }
   }
 
   /** Map reply_to_message to the corresponding message id in the other chat */
@@ -149,9 +179,15 @@ export class BotService {
     msg: TgMessage,
     fromSide: "private" | "topic",
   ): Promise<number | null> {
-    const reply = msg.reply_to_message;
-    if (!reply) return null;
-    return this.store.getMappedMessageId(userId, fromSide, reply.message_id);
+    const replyId = this.getReplyMessageId(msg);
+    if (replyId == null) return null;
+    return this.store.getMappedMessageId(userId, fromSide, replyId);
+  }
+
+  private getReplyMessageId(msg: TgMessage): number | null {
+    if (msg.reply_to_message) return msg.reply_to_message.message_id;
+    const ext = msg.external_reply?.message_id;
+    return ext ?? null;
   }
 
   async recreateTopic(user: UserRecord, from: TgUser): Promise<UserRecord> {
