@@ -120,6 +120,31 @@ export async function handleGroupMessage(
   }
 
   // Topic admin commands
+  if (command === "/testreply") {
+    const mapped =
+      msg.reply_to_message || msg.external_reply?.message_id != null
+        ? await bot.store.getMappedMessageId(
+            user.userId,
+            "topic",
+            msg.reply_to_message?.message_id ?? msg.external_reply!.message_id!,
+          )
+        : null;
+    const info = {
+      reply_to_message_id: msg.reply_to_message?.message_id ?? null,
+      reply_to_text: msg.reply_to_message?.text?.slice(0, 80) ?? null,
+      external_reply_id: msg.external_reply?.message_id ?? null,
+      external_reply_text: msg.external_reply?.text?.slice(0, 80) ?? null,
+      quote_text: msg.quote?.text?.slice(0, 80) ?? null,
+      mapped_private_id: mapped,
+    };
+    await bot.api.sendMessage(
+      bot.groupId,
+      `<pre>${escapeHtml(JSON.stringify(info, null, 2))}</pre>`,
+      { message_thread_id: threadId, parse_mode: "HTML" },
+    );
+    return;
+  }
+
   if (command === "/info") {
     await bot.api.sendMessage(bot.groupId, userCard(user), {
       message_thread_id: threadId,

@@ -85,6 +85,7 @@ export function adminHelp(): string {
     `/open — 重新打开会话`,
     `/reset — 重置验证（要求用户重新验证）`,
     `/retopic — 删除并重建话题`,
+    `/testreply — 调试：查看回复字段（需回复某条消息后发送）`,
     ``,
     `<b>系统话题（General）命令</b>`,
     `/help — 显示本帮助`,

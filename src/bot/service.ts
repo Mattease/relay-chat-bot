@@ -147,8 +147,16 @@ export class BotService {
       direction === "toTopic" ? { message_thread_id: user.topicId } : {};
     const replyCtx = await this.buildReplyContext(user.userId, msg, fromSide);
     const replyParams = replyCtx
-      ? this.buildReplyParameters(replyCtx.mappedTargetId, replyCtx.quote)
+      ? this.buildReplyParameters(replyCtx.mappedTargetId)
       : undefined;
+
+    if (replyCtx) {
+      console.log("relay reply", direction, {
+        preview: replyCtx.preview.slice(0, 40),
+        mapped: replyCtx.mappedTargetId,
+        replyId: this.getReplyMessageId(msg),
+      });
+    }
 
     if (this.isTextOnly(msg)) {
       if (replyCtx) {
@@ -161,24 +169,20 @@ export class BotService {
     const copyOpts: {
       message_thread_id?: number;
       caption?: string;
-      parse_mode?: "HTML";
       reply_parameters?: ReplyParameters;
     } = { ...baseOpts, ...(replyParams ? { reply_parameters: replyParams } : {}) };
 
     if (replyCtx) {
-      if (msg.caption) {
-        copyOpts.caption = this.formatQuotedBody(replyCtx.preview, msg.caption);
-      } else {
-        copyOpts.caption = `<blockquote>${escapeHtml(replyCtx.preview)}</blockquote>`;
-      }
-      copyOpts.parse_mode = "HTML";
+      copyOpts.caption = msg.caption
+        ? this.formatQuotedBody(replyCtx.preview, msg.caption)
+        : `↩️ ${replyCtx.preview}`;
     }
 
     try {
       return await this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, copyOpts);
     } catch (err) {
-      if (!replyParams) throw err;
-      console.warn("relay copy with native reply failed, retrying with visible quote", err);
+      if (!replyParams && !replyCtx) throw err;
+      console.warn("relay copy failed, retrying without native reply", err);
       const { reply_parameters: _drop, ...withoutReply } = copyOpts;
       return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, withoutReply);
     }
@@ -190,32 +194,31 @@ export class BotService {
     baseOpts: { message_thread_id?: number },
     replyParams?: ReplyParameters,
   ): Promise<{ message_id: number }> {
-    const opts = {
-      ...baseOpts,
-      parse_mode: "HTML" as const,
-      ...(replyParams ? { reply_parameters: replyParams } : {}),
-    };
-    try {
-      const sent = await this.api.sendMessage(toChatId, text, opts);
-      return { message_id: sent.message_id };
-    } catch (err) {
-      if (!replyParams) throw err;
-      console.warn("sendMessage with native reply failed, retrying with visible quote", err);
-      const sent = await this.api.sendMessage(toChatId, text, {
-        ...baseOpts,
-        parse_mode: "HTML",
-      });
-      return { message_id: sent.message_id };
+    if (replyParams) {
+      try {
+        const sent = await this.api.sendMessage(toChatId, text, {
+          ...baseOpts,
+          reply_parameters: replyParams,
+        });
+        return { message_id: sent.message_id };
+      } catch (err) {
+        console.warn("sendMessage with native reply failed, sending visible quote only", err);
+      }
     }
+    const sent = await this.api.sendMessage(toChatId, text, baseOpts);
+    return { message_id: sent.message_id };
   }
 
   private async buildReplyContext(
     userId: number,
     msg: TgMessage,
     fromSide: "private" | "topic",
-  ): Promise<{ preview: string; quote: string | null; mappedTargetId: number | null } | null> {
+  ): Promise<{ preview: string; mappedTargetId: number | null } | null> {
     const source = msg.reply_to_message;
-    if (!source) return null;
+    const external = msg.external_reply;
+    const textQuote = msg.quote;
+
+    if (!source && !external && !textQuote) return null;
 
     const replyId = this.getReplyMessageId(msg);
     const mappedTargetId =
@@ -223,28 +226,40 @@ export class BotService {
         ? await this.store.getMappedMessageId(userId, fromSide, replyId)
         : null;
 
-    return {
-      preview: this.replyPreview(source),
-      quote: this.replyQuote(source),
-      mappedTargetId,
-    };
+    if (textQuote?.text) {
+      const preview =
+        textQuote.text.length > 120 ? `${textQuote.text.slice(0, 120)}…` : textQuote.text;
+      return { preview, mappedTargetId };
+    }
+
+    if (source) {
+      return {
+        preview: this.replyPreview(source),
+        mappedTargetId,
+      };
+    }
+
+    if (external) {
+      return {
+        preview: this.replyPreview(external),
+        mappedTargetId,
+      };
+    }
+
+    return null;
   }
 
-  private buildReplyParameters(
-    mappedTargetId: number | null,
-    quote: string | null,
-  ): ReplyParameters | undefined {
+  private buildReplyParameters(mappedTargetId: number | null): ReplyParameters | undefined {
     if (mappedTargetId == null) return undefined;
-    const params: ReplyParameters = { message_id: mappedTargetId };
-    if (quote) params.quote = quote;
-    return params;
+    return { message_id: mappedTargetId };
   }
 
+  /** Plain-text quote prefix — works in all clients, no HTML parsing */
   private formatQuotedBody(preview: string, body: string): string {
-    return `<blockquote>${escapeHtml(preview)}</blockquote>\n\n${escapeHtml(body)}`;
+    return `↩️ ${preview}\n──────────\n${body}`;
   }
 
-  private replyPreview(msg: TgMessage): string {
+  private replyPreview(msg: Pick<TgMessage, "text" | "caption" | "photo" | "sticker" | "video" | "document" | "voice" | "audio" | "video_note" | "animation">): string {
     if (msg.text) return msg.text.length > 120 ? `${msg.text.slice(0, 120)}…` : msg.text;
     if (msg.caption) return msg.caption.length > 120 ? `${msg.caption.slice(0, 120)}…` : msg.caption;
     if (msg.photo) return "[图片]";
@@ -256,13 +271,6 @@ export class BotService {
     if (msg.video_note) return "[视频消息]";
     if (msg.animation) return "[GIF]";
     return "[消息]";
-  }
-
-  /** Exact substring for reply_parameters.quote (max 200 chars) */
-  private replyQuote(msg: TgMessage): string | null {
-    const text = msg.text ?? msg.caption;
-    if (!text) return null;
-    return text.slice(0, 200);
   }
 
   private isTextOnly(msg: TgMessage): boolean {
@@ -281,8 +289,8 @@ export class BotService {
 
   private getReplyMessageId(msg: TgMessage): number | null {
     if (msg.reply_to_message) return msg.reply_to_message.message_id;
-    const ext = msg.external_reply?.message_id;
-    return ext ?? null;
+    if (msg.external_reply?.message_id != null) return msg.external_reply.message_id;
+    return null;
   }
 
   async recreateTopic(user: UserRecord, from: TgUser): Promise<UserRecord> {

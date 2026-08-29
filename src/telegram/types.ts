@@ -26,6 +26,26 @@ export interface ReplyParameters {
   quote?: string;
 }
 
+export interface TgExternalReply {
+  message_id?: number;
+  chat?: TgChat;
+  text?: string;
+  caption?: string;
+  photo?: unknown[];
+  video?: unknown;
+  document?: unknown;
+  sticker?: unknown;
+  voice?: unknown;
+  audio?: unknown;
+  animation?: unknown;
+  video_note?: unknown;
+}
+
+export interface TgTextQuote {
+  text: string;
+  position?: number;
+}
+
 export interface TgMessage {
   message_id: number;
   from?: TgUser;
@@ -35,7 +55,8 @@ export interface TgMessage {
   text?: string;
   caption?: string;
   reply_to_message?: TgMessage;
-  external_reply?: { message_id?: number; chat?: TgChat; origin?: unknown };
+  external_reply?: TgExternalReply;
+  quote?: TgTextQuote;
   is_topic_message?: boolean;
   forum_topic_created?: { name: string; icon_color: number };
   new_chat_members?: TgUser[];
