@@ -61,7 +61,7 @@ export async function handlePrivateMessage(
   }
 
   try {
-    await bot.relayUserToTopic(user, msg.chat.id, msg.message_id);
+    await bot.relayUserToTopic(user, msg);
   } catch (err) {
     console.error("relay user→topic failed", err);
     await bot.api.sendMessage(from.id, "消息转发失败，请稍后重试。");
@@ -209,7 +209,7 @@ export async function handleGroupMessage(
 
   // Don't relay service notices we ourselves might echo — only admin content
   try {
-    await bot.relayTopicToUser(user, msg.chat.id, msg.message_id);
+    await bot.relayTopicToUser(user, msg);
   } catch (err) {
     console.error("relay topic→user failed", err);
     await bot.api.sendMessage(

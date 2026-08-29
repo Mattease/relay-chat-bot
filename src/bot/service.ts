@@ -1,5 +1,5 @@
 import type { Env, UserRecord } from "../types";
-import type { TgUser } from "../telegram/types";
+import type { TgMessage, TgUser } from "../telegram/types";
 import { TelegramApi } from "../telegram/api";
 import { Store } from "../storage/kv";
 import {
@@ -122,18 +122,36 @@ export class BotService {
     await this.store.clearPendingVerify(user.userId);
   }
 
-  async relayUserToTopic(user: UserRecord, fromChatId: number, messageId: number): Promise<void> {
-    await this.api.copyMessage(this.groupId, fromChatId, messageId, {
+  async relayUserToTopic(user: UserRecord, msg: TgMessage): Promise<void> {
+    const replyToTopicId = await this.resolveReplyTarget(user.userId, msg, "private");
+    const copied = await this.api.copyMessage(this.groupId, msg.chat.id, msg.message_id, {
       message_thread_id: user.topicId,
+      ...(replyToTopicId != null ? { reply_to_message_id: replyToTopicId } : {}),
     });
+    await this.store.saveMessageMap(user.userId, msg.message_id, copied.message_id);
     user.messageCount += 1;
     await this.store.saveUser(user);
     await this.store.incrStat("messages_in");
   }
 
-  async relayTopicToUser(user: UserRecord, fromChatId: number, messageId: number): Promise<void> {
-    await this.api.copyMessage(user.userId, fromChatId, messageId);
+  async relayTopicToUser(user: UserRecord, msg: TgMessage): Promise<void> {
+    const replyToPrivateId = await this.resolveReplyTarget(user.userId, msg, "topic");
+    const copied = await this.api.copyMessage(user.userId, msg.chat.id, msg.message_id, {
+      ...(replyToPrivateId != null ? { reply_to_message_id: replyToPrivateId } : {}),
+    });
+    await this.store.saveMessageMap(user.userId, copied.message_id, msg.message_id);
     await this.store.incrStat("messages_out");
+  }
+
+  /** Map reply_to_message to the corresponding message id in the other chat */
+  private async resolveReplyTarget(
+    userId: number,
+    msg: TgMessage,
+    fromSide: "private" | "topic",
+  ): Promise<number | null> {
+    const reply = msg.reply_to_message;
+    if (!reply) return null;
+    return this.store.getMappedMessageId(userId, fromSide, reply.message_id);
   }
 
   async recreateTopic(user: UserRecord, from: TgUser): Promise<UserRecord> {

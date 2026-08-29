@@ -7,7 +7,14 @@ const KEY = {
   rate: (id: number, minute: number) => `rate:${id}:${minute}`,
   meta: (k: string) => `meta:${k}`,
   blocked: (id: number) => `blocked:${id}`,
+  /** private chat message_id → topic message_id */
+  msgPrivate: (userId: number, msgId: number) => `msg:${userId}:p:${msgId}`,
+  /** topic message_id → private chat message_id */
+  msgTopic: (userId: number, msgId: number) => `msg:${userId}:t:${msgId}`,
 } as const;
+
+/** How long reply-to mappings are kept (30 days) */
+const MSG_MAP_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 export class Store {
   constructor(private kv: KVNamespace) {}
@@ -76,5 +83,32 @@ export class Store {
     const next = Number((await this.kv.get(key)) ?? "0") + by;
     await this.kv.put(key, String(next));
     return next;
+  }
+
+  /** Map a relayed message between the user's private chat and their forum topic */
+  async saveMessageMap(
+    userId: number,
+    privateMsgId: number,
+    topicMsgId: number,
+  ): Promise<void> {
+    const opts = { expirationTtl: MSG_MAP_TTL_SECONDS };
+    await Promise.all([
+      this.kv.put(KEY.msgPrivate(userId, privateMsgId), String(topicMsgId), opts),
+      this.kv.put(KEY.msgTopic(userId, topicMsgId), String(privateMsgId), opts),
+    ]);
+  }
+
+  /** Resolve reply target in the other chat (private ↔ topic) */
+  async getMappedMessageId(
+    userId: number,
+    side: "private" | "topic",
+    messageId: number,
+  ): Promise<number | null> {
+    const key =
+      side === "private"
+        ? KEY.msgPrivate(userId, messageId)
+        : KEY.msgTopic(userId, messageId);
+    const raw = await this.kv.get(key);
+    return raw ? Number(raw) : null;
   }
 }
