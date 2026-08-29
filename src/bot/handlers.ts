@@ -1,20 +1,7 @@
 import type { Env } from "../types";
 import type { TgCallbackQuery, TgMessage } from "../telegram/types";
 import { BotService } from "./service";
-import { isAdmin, adminHelp, userCard, escapeHtml, parseCommandFromMessage } from "../utils/format";
-
-/** Bump when diagnosing deployment issues */
-const DIAG_VERSION = "diag-v3";
-
-async function safeSend(
-  bot: BotService,
-  chatId: number,
-  text: string,
-  threadId?: number,
-): Promise<void> {
-  const opts = threadId != null ? { message_thread_id: threadId } : {};
-  await bot.api.sendMessage(chatId, text, opts);
-}
+import { isAdmin, adminHelp, userCard, escapeHtml, parseCommand } from "../utils/format";
 
 export async function handlePrivateMessage(
   env: Env,
@@ -25,16 +12,6 @@ export async function handlePrivateMessage(
   if (!from || from.is_bot) return;
 
   const text = (msg.text ?? "").trim();
-
-  const command = parseCommandFromMessage(msg);
-  if ((command === "/ping" || command === "/testreply") && isAdmin(env, from.id)) {
-    try {
-      await handleDiagCommand(env, bot, msg, command);
-    } catch (err) {
-      await bot.api.sendMessage(from.id, `❌ 命令失败: ${String(err)}`);
-    }
-    return;
-  }
 
   // /start
   if (text === "/start" || text.startsWith("/start ")) {
@@ -96,30 +73,16 @@ export async function handleGroupMessage(
   bot: BotService,
   msg: TgMessage,
 ): Promise<void> {
+  if (msg.chat.id !== bot.groupId) return;
   const from = msg.from;
   if (!from || from.is_bot) return;
-
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id;
-  const command = parseCommandFromMessage(msg);
-
-  // Diagnostic commands — always respond in the chat where command was sent
-  if (command === "/ping" || command === "/testreply") {
-    try {
-      await handleDiagCommand(env, bot, msg, command);
-    } catch (err) {
-      console.error(command, err);
-      await safeSend(bot, chatId, `❌ 命令失败: ${String(err)}`, threadId);
-    }
-    return;
-  }
-
-  if (chatId !== bot.groupId) return;
 
   // Only admins can operate from the group
   if (!isAdmin(env, from.id)) return;
 
+  const threadId = msg.message_thread_id;
   const text = (msg.text ?? "").trim();
+  const command = parseCommand(text);
 
   // System / General topic commands
   if (bot.isGeneralTopic(threadId)) {
@@ -315,109 +278,4 @@ export async function handleCallback(
       { message_thread_id: user.topicId, parse_mode: "HTML" },
     );
   } catch { /* ignore */ }
-}
-
-async function handleDiagCommand(
-  env: Env,
-  bot: BotService,
-  msg: TgMessage,
-  command: string,
-): Promise<void> {
-  const from = msg.from!;
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id;
-  const inGroup = chatId === bot.groupId;
-
-  if (!isAdmin(env, from.id)) {
-    await safeSend(
-      bot,
-      chatId,
-      `❌ 仅管理员可用\n你的 ID: ${from.id}\nADMIN_UIDS: ${env.ADMIN_UIDS}`,
-      inGroup ? threadId : undefined,
-    );
-    return;
-  }
-
-  if (command === "/ping") {
-    await safeSend(
-      bot,
-      chatId,
-      [
-        `🏓 pong ${DIAG_VERSION}`,
-        `你的 ID: ${from.id}`,
-        `当前 chat: ${chatId}`,
-        `配置群 ID: ${bot.groupId}`,
-        `群 ID 匹配: ${inGroup ? "是" : "否"}`,
-        `话题 ID: ${threadId ?? "无"}`,
-        `是否 General: ${bot.isGeneralTopic(threadId) ? "是" : "否"}`,
-      ].join("\n"),
-      inGroup ? threadId : undefined,
-    );
-    return;
-  }
-
-  // /testreply
-  if (!inGroup) {
-    await safeSend(
-      bot,
-      chatId,
-      [
-        "📋 私聊诊断结果：",
-        `reply_to_message_id: ${msg.reply_to_message?.message_id ?? "无"}`,
-        `reply_to_text: ${msg.reply_to_message?.text ?? "无"}`,
-        `quote_text: ${msg.quote?.text ?? "无"}`,
-        "",
-        "⚠️ /testreply 完整测试请在管理群的用户话题里进行：",
-        "1. 进入用户话题",
-        "2. 让用户发消息",
-        "3. 回复该消息 → 发送 /testreply",
-      ].join("\n"),
-    );
-    return;
-  }
-
-  if (bot.isGeneralTopic(threadId)) {
-    await safeSend(
-      bot,
-      chatId,
-      [
-        "⚠️ 请在用户话题里用 /testreply，不是 General。",
-        "",
-        "步骤：进入用户话题 → 让用户发消息 → 回复该消息 → /testreply",
-      ].join("\n"),
-      threadId,
-    );
-    return;
-  }
-
-  if (!threadId) {
-    await safeSend(bot, chatId, "❌ 未检测到话题 ID", undefined);
-    return;
-  }
-
-  const user = await bot.store.getUserByTopic(threadId);
-  if (!user) {
-    await safeSend(bot, chatId, `❌ 话题 ${threadId} 未关联用户`, threadId);
-    return;
-  }
-
-  const replyId = msg.reply_to_message?.message_id ?? msg.external_reply?.message_id ?? null;
-  const mapped =
-    replyId != null
-      ? await bot.store.getMappedMessageId(user.userId, "topic", replyId)
-      : null;
-
-  const info = {
-    version: DIAG_VERSION,
-    reply_to_message_id: msg.reply_to_message?.message_id ?? null,
-    reply_to_text: msg.reply_to_message?.text?.slice(0, 80) ?? null,
-    external_reply_id: msg.external_reply?.message_id ?? null,
-    external_reply_text: msg.external_reply?.text?.slice(0, 80) ?? null,
-    quote_text: msg.quote?.text?.slice(0, 80) ?? null,
-    mapped_private_id: mapped,
-    topic_id: threadId,
-    your_user_id: from.id,
-  };
-
-  await safeSend(bot, chatId, JSON.stringify(info, null, 2), threadId);
 }

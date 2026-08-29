@@ -6,8 +6,12 @@ import {
   boolEnv,
   displayName,
   escapeHtml,
+  formatReplyCaption,
+  formatReplyMessage,
+  formatReplyOnly,
   intEnv,
   makeCaptcha,
+  replyPreviewText,
   topicName,
   userCard,
 } from "../utils/format";
@@ -145,75 +149,72 @@ export class BotService {
     const toChatId = direction === "toTopic" ? this.groupId : user.userId;
     const baseOpts =
       direction === "toTopic" ? { message_thread_id: user.topicId } : {};
-    const replyCtx = await this.buildReplyContext(user.userId, msg, fromSide);
+    const replyCtx = await this.buildReplyContext(user.userId, msg, fromSide, direction);
     const replyParams = replyCtx
       ? this.buildReplyParameters(replyCtx.mappedTargetId)
       : undefined;
 
-    if (replyCtx) {
-      console.log("relay reply", direction, {
-        preview: replyCtx.preview.slice(0, 40),
-        mapped: replyCtx.mappedTargetId,
-        replyId: this.getReplyMessageId(msg),
-      });
-    }
-
     if (this.isTextOnly(msg)) {
-      if (replyCtx) {
-        const text = this.formatQuotedBody(replyCtx.preview, msg.text!);
-        return this.sendTextRelay(toChatId, text, baseOpts, replyParams);
+      if (!replyCtx) {
+        return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, baseOpts);
       }
-      return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, baseOpts);
+
+      // Prefer native Telegram reply bubble (cleanest)
+      if (replyParams) {
+        try {
+          const sent = await this.api.sendMessage(toChatId, msg.text!, {
+            ...baseOpts,
+            reply_parameters: replyParams,
+          });
+          return { message_id: sent.message_id };
+        } catch (err) {
+          console.warn("native text reply failed, using styled quote", err);
+        }
+      }
+
+      // Fallback: styled visible quote
+      const text = formatReplyMessage(replyCtx.preview, msg.text!, replyCtx.author);
+      const sent = await this.api.sendMessage(toChatId, text, {
+        ...baseOpts,
+        parse_mode: "HTML",
+      });
+      return { message_id: sent.message_id };
     }
 
     const copyOpts: {
       message_thread_id?: number;
       caption?: string;
+      parse_mode?: "HTML";
       reply_parameters?: ReplyParameters;
-    } = { ...baseOpts, ...(replyParams ? { reply_parameters: replyParams } : {}) };
+    } = { ...baseOpts };
 
-    if (replyCtx) {
-      copyOpts.caption = msg.caption
-        ? this.formatQuotedBody(replyCtx.preview, msg.caption)
-        : `↩️ ${replyCtx.preview}`;
-    }
-
-    try {
-      return await this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, copyOpts);
-    } catch (err) {
-      if (!replyParams && !replyCtx) throw err;
-      console.warn("relay copy failed, retrying without native reply", err);
-      const { reply_parameters: _drop, ...withoutReply } = copyOpts;
-      return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, withoutReply);
-    }
-  }
-
-  private async sendTextRelay(
-    toChatId: number,
-    text: string,
-    baseOpts: { message_thread_id?: number },
-    replyParams?: ReplyParameters,
-  ): Promise<{ message_id: number }> {
-    if (replyParams) {
+    if (replyCtx && replyParams) {
       try {
-        const sent = await this.api.sendMessage(toChatId, text, {
-          ...baseOpts,
+        return await this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, {
+          ...copyOpts,
           reply_parameters: replyParams,
         });
-        return { message_id: sent.message_id };
       } catch (err) {
-        console.warn("sendMessage with native reply failed, sending visible quote only", err);
+        console.warn("native media reply failed, using styled caption", err);
       }
     }
-    const sent = await this.api.sendMessage(toChatId, text, baseOpts);
-    return { message_id: sent.message_id };
+
+    if (replyCtx) {
+      copyOpts.parse_mode = "HTML";
+      copyOpts.caption = msg.caption
+        ? formatReplyCaption(replyCtx.preview, msg.caption, replyCtx.author)
+        : formatReplyOnly(replyCtx.preview, replyCtx.author);
+    }
+
+    return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, copyOpts);
   }
 
   private async buildReplyContext(
     userId: number,
     msg: TgMessage,
     fromSide: "private" | "topic",
-  ): Promise<{ preview: string; mappedTargetId: number | null } | null> {
+    direction: "toTopic" | "toUser",
+  ): Promise<{ preview: string; author: string | null; mappedTargetId: number | null } | null> {
     const source = msg.reply_to_message;
     const external = msg.external_reply;
     const textQuote = msg.quote;
@@ -226,22 +227,30 @@ export class BotService {
         ? await this.store.getMappedMessageId(userId, fromSide, replyId)
         : null;
 
+    const defaultAuthor = direction === "toTopic" ? "用户" : "客服";
+
     if (textQuote?.text) {
       const preview =
         textQuote.text.length > 120 ? `${textQuote.text.slice(0, 120)}…` : textQuote.text;
-      return { preview, mappedTargetId };
+      return {
+        preview,
+        author: this.replyAuthor(source, defaultAuthor),
+        mappedTargetId,
+      };
     }
 
     if (source) {
       return {
-        preview: this.replyPreview(source),
+        preview: replyPreviewText(source),
+        author: this.replyAuthor(source, defaultAuthor),
         mappedTargetId,
       };
     }
 
     if (external) {
       return {
-        preview: this.replyPreview(external),
+        preview: replyPreviewText(external),
+        author: defaultAuthor,
         mappedTargetId,
       };
     }
@@ -249,28 +258,17 @@ export class BotService {
     return null;
   }
 
+  private replyAuthor(
+    source: { from?: TgUser } | undefined,
+    fallback: string,
+  ): string | null {
+    if (source?.from?.first_name) return source.from.first_name;
+    return fallback;
+  }
+
   private buildReplyParameters(mappedTargetId: number | null): ReplyParameters | undefined {
     if (mappedTargetId == null) return undefined;
     return { message_id: mappedTargetId };
-  }
-
-  /** Plain-text quote prefix — works in all clients, no HTML parsing */
-  private formatQuotedBody(preview: string, body: string): string {
-    return `↩️ ${preview}\n──────────\n${body}`;
-  }
-
-  private replyPreview(msg: Pick<TgMessage, "text" | "caption" | "photo" | "sticker" | "video" | "document" | "voice" | "audio" | "video_note" | "animation">): string {
-    if (msg.text) return msg.text.length > 120 ? `${msg.text.slice(0, 120)}…` : msg.text;
-    if (msg.caption) return msg.caption.length > 120 ? `${msg.caption.slice(0, 120)}…` : msg.caption;
-    if (msg.photo) return "[图片]";
-    if (msg.sticker) return "[贴纸]";
-    if (msg.video) return "[视频]";
-    if (msg.document) return "[文件]";
-    if (msg.voice) return "[语音]";
-    if (msg.audio) return "[音频]";
-    if (msg.video_note) return "[视频消息]";
-    if (msg.animation) return "[GIF]";
-    return "[消息]";
   }
 
   private isTextOnly(msg: TgMessage): boolean {
