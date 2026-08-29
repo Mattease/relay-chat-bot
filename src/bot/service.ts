@@ -6,12 +6,8 @@ import {
   boolEnv,
   displayName,
   escapeHtml,
-  formatReplyCaption,
-  formatReplyMessage,
-  formatReplyOnly,
   intEnv,
   makeCaptcha,
-  replyPreviewText,
   topicName,
   userCard,
 } from "../utils/format";
@@ -149,125 +145,47 @@ export class BotService {
     const toChatId = direction === "toTopic" ? this.groupId : user.userId;
     const baseOpts =
       direction === "toTopic" ? { message_thread_id: user.topicId } : {};
-    const replyCtx = await this.buildReplyContext(user.userId, msg, fromSide, direction);
-    const replyParams = replyCtx
-      ? this.buildReplyParameters(replyCtx.mappedTargetId)
-      : undefined;
+    const replyParams = await this.buildReplyParameters(user.userId, msg, fromSide);
+
+    const sendOpts = replyParams
+      ? { ...baseOpts, reply_parameters: replyParams }
+      : baseOpts;
 
     if (this.isTextOnly(msg)) {
-      if (!replyCtx) {
-        return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, baseOpts);
-      }
-
-      // Prefer native Telegram reply bubble (cleanest)
       if (replyParams) {
         try {
-          const sent = await this.api.sendMessage(toChatId, msg.text!, {
-            ...baseOpts,
-            reply_parameters: replyParams,
-          });
+          const sent = await this.api.sendMessage(toChatId, msg.text!, sendOpts);
           return { message_id: sent.message_id };
         } catch (err) {
-          console.warn("native text reply failed, using styled quote", err);
+          console.warn("native text reply failed, sending plain text", err);
         }
       }
-
-      // Fallback: styled visible quote
-      const text = formatReplyMessage(replyCtx.preview, msg.text!, replyCtx.author);
-      const sent = await this.api.sendMessage(toChatId, text, {
-        ...baseOpts,
-        parse_mode: "HTML",
-      });
-      return { message_id: sent.message_id };
+      return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, baseOpts);
     }
 
-    const copyOpts: {
-      message_thread_id?: number;
-      caption?: string;
-      parse_mode?: "HTML";
-      reply_parameters?: ReplyParameters;
-    } = { ...baseOpts };
-
-    if (replyCtx && replyParams) {
+    if (replyParams) {
       try {
-        return await this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, {
-          ...copyOpts,
-          reply_parameters: replyParams,
-        });
+        return await this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, sendOpts);
       } catch (err) {
-        console.warn("native media reply failed, using styled caption", err);
+        console.warn("native media reply failed, sending plain copy", err);
       }
     }
 
-    if (replyCtx) {
-      copyOpts.parse_mode = "HTML";
-      copyOpts.caption = msg.caption
-        ? formatReplyCaption(replyCtx.preview, msg.caption, replyCtx.author)
-        : formatReplyOnly(replyCtx.preview, replyCtx.author);
-    }
-
-    return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, copyOpts);
+    return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, baseOpts);
   }
 
-  private async buildReplyContext(
+  /** Only link reply when the target maps to a relayed message on the other side */
+  private async buildReplyParameters(
     userId: number,
     msg: TgMessage,
     fromSide: "private" | "topic",
-    direction: "toTopic" | "toUser",
-  ): Promise<{ preview: string; author: string | null; mappedTargetId: number | null } | null> {
-    const source = msg.reply_to_message;
-    const external = msg.external_reply;
-    const textQuote = msg.quote;
-
-    if (!source && !external && !textQuote) return null;
-
+  ): Promise<ReplyParameters | undefined> {
     const replyId = this.getReplyMessageId(msg);
-    const mappedTargetId =
-      replyId != null
-        ? await this.store.getMappedMessageId(userId, fromSide, replyId)
-        : null;
+    if (replyId == null) return undefined;
 
-    const defaultAuthor = direction === "toTopic" ? "用户" : "客服";
-
-    if (textQuote?.text) {
-      const preview =
-        textQuote.text.length > 120 ? `${textQuote.text.slice(0, 120)}…` : textQuote.text;
-      return {
-        preview,
-        author: this.replyAuthor(source, defaultAuthor),
-        mappedTargetId,
-      };
-    }
-
-    if (source) {
-      return {
-        preview: replyPreviewText(source),
-        author: this.replyAuthor(source, defaultAuthor),
-        mappedTargetId,
-      };
-    }
-
-    if (external) {
-      return {
-        preview: replyPreviewText(external),
-        author: defaultAuthor,
-        mappedTargetId,
-      };
-    }
-
-    return null;
-  }
-
-  private replyAuthor(
-    source: { from?: TgUser } | undefined,
-    fallback: string,
-  ): string | null {
-    if (source?.from?.first_name) return source.from.first_name;
-    return fallback;
-  }
-
-  private buildReplyParameters(mappedTargetId: number | null): ReplyParameters | undefined {
+    const mappedTargetId = await this.store.getMappedMessageId(userId, fromSide, replyId);
     if (mappedTargetId == null) return undefined;
+
     return { message_id: mappedTargetId };
   }
 
@@ -287,7 +205,10 @@ export class BotService {
 
   private getReplyMessageId(msg: TgMessage): number | null {
     if (msg.reply_to_message) return msg.reply_to_message.message_id;
-    if (msg.external_reply?.message_id != null) return msg.external_reply.message_id;
+    // external_reply alone is not a reliable reply signal; require quote text too
+    if (msg.quote?.text && msg.external_reply?.message_id != null) {
+      return msg.external_reply.message_id;
+    }
     return null;
   }
 
