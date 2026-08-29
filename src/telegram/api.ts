@@ -45,7 +45,7 @@ export class TelegramApi {
       parse_mode?: ParseMode;
       reply_markup?: InlineKeyboardMarkup;
       disable_web_page_preview?: boolean;
-      reply_to_message_id?: number;
+      reply_parameters?: ReplyParameters;
     } = {},
   ): Promise<TgMessage> {
     return this.call("sendMessage", {

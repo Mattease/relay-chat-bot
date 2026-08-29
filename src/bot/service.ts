@@ -1,5 +1,5 @@
 import type { Env, UserRecord } from "../types";
-import type { TgMessage, TgUser } from "../telegram/types";
+import type { ReplyParameters, TgMessage, TgUser } from "../telegram/types";
 import { TelegramApi } from "../telegram/api";
 import { Store } from "../storage/kv";
 import {
@@ -123,14 +123,7 @@ export class BotService {
   }
 
   async relayUserToTopic(user: UserRecord, msg: TgMessage): Promise<void> {
-    const replyToTopicId = await this.resolveReplyTarget(user.userId, msg, "private");
-    const copied = await this.relayCopy(
-      this.groupId,
-      msg.chat.id,
-      msg.message_id,
-      { message_thread_id: user.topicId },
-      replyToTopicId,
-    );
+    const copied = await this.relayMessage(user, msg, "toTopic");
     await this.store.saveMessageMap(user.userId, msg.message_id, copied.message_id);
     user.messageCount += 1;
     await this.store.saveUser(user);
@@ -138,50 +131,152 @@ export class BotService {
   }
 
   async relayTopicToUser(user: UserRecord, msg: TgMessage): Promise<void> {
-    const replyToPrivateId = await this.resolveReplyTarget(user.userId, msg, "topic");
-    const copied = await this.relayCopy(
-      user.userId,
-      msg.chat.id,
-      msg.message_id,
-      {},
-      replyToPrivateId,
-    );
+    const copied = await this.relayMessage(user, msg, "toUser");
     await this.store.saveMessageMap(user.userId, copied.message_id, msg.message_id);
     await this.store.incrStat("messages_out");
   }
 
-  /** Copy with native reply bubble; fall back to plain copy if reply target is stale */
-  private async relayCopy(
-    toChatId: number,
-    fromChatId: number,
-    messageId: number,
-    baseOpts: { message_thread_id?: number },
-    replyTargetId: number | null,
+  private async relayMessage(
+    user: UserRecord,
+    msg: TgMessage,
+    direction: "toTopic" | "toUser",
   ): Promise<{ message_id: number }> {
-    if (replyTargetId == null) {
-      return this.api.copyMessage(toChatId, fromChatId, messageId, baseOpts);
+    const fromSide = direction === "toTopic" ? "private" : "topic";
+    const toChatId = direction === "toTopic" ? this.groupId : user.userId;
+    const baseOpts =
+      direction === "toTopic" ? { message_thread_id: user.topicId } : {};
+    const replyCtx = await this.buildReplyContext(user.userId, msg, fromSide);
+    const replyParams = replyCtx
+      ? this.buildReplyParameters(replyCtx.mappedTargetId, replyCtx.quote)
+      : undefined;
+
+    if (this.isTextOnly(msg)) {
+      if (replyCtx) {
+        const text = this.formatQuotedBody(replyCtx.preview, msg.text!);
+        return this.sendTextRelay(toChatId, text, baseOpts, replyParams);
+      }
+      return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, baseOpts);
+    }
+
+    const copyOpts: {
+      message_thread_id?: number;
+      caption?: string;
+      parse_mode?: "HTML";
+      reply_parameters?: ReplyParameters;
+    } = { ...baseOpts, ...(replyParams ? { reply_parameters: replyParams } : {}) };
+
+    if (replyCtx) {
+      if (msg.caption) {
+        copyOpts.caption = this.formatQuotedBody(replyCtx.preview, msg.caption);
+      } else {
+        copyOpts.caption = `<blockquote>${escapeHtml(replyCtx.preview)}</blockquote>`;
+      }
+      copyOpts.parse_mode = "HTML";
     }
 
     try {
-      return await this.api.copyMessage(toChatId, fromChatId, messageId, {
-        ...baseOpts,
-        reply_parameters: { message_id: replyTargetId },
-      });
+      return await this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, copyOpts);
     } catch (err) {
-      console.warn("relay copy with reply failed, retrying without reply", err);
-      return this.api.copyMessage(toChatId, fromChatId, messageId, baseOpts);
+      if (!replyParams) throw err;
+      console.warn("relay copy with native reply failed, retrying with visible quote", err);
+      const { reply_parameters: _drop, ...withoutReply } = copyOpts;
+      return this.api.copyMessage(toChatId, msg.chat.id, msg.message_id, withoutReply);
     }
   }
 
-  /** Map reply_to_message to the corresponding message id in the other chat */
-  private async resolveReplyTarget(
+  private async sendTextRelay(
+    toChatId: number,
+    text: string,
+    baseOpts: { message_thread_id?: number },
+    replyParams?: ReplyParameters,
+  ): Promise<{ message_id: number }> {
+    const opts = {
+      ...baseOpts,
+      parse_mode: "HTML" as const,
+      ...(replyParams ? { reply_parameters: replyParams } : {}),
+    };
+    try {
+      const sent = await this.api.sendMessage(toChatId, text, opts);
+      return { message_id: sent.message_id };
+    } catch (err) {
+      if (!replyParams) throw err;
+      console.warn("sendMessage with native reply failed, retrying with visible quote", err);
+      const sent = await this.api.sendMessage(toChatId, text, {
+        ...baseOpts,
+        parse_mode: "HTML",
+      });
+      return { message_id: sent.message_id };
+    }
+  }
+
+  private async buildReplyContext(
     userId: number,
     msg: TgMessage,
     fromSide: "private" | "topic",
-  ): Promise<number | null> {
+  ): Promise<{ preview: string; quote: string | null; mappedTargetId: number | null } | null> {
+    const source = msg.reply_to_message;
+    if (!source) return null;
+
     const replyId = this.getReplyMessageId(msg);
-    if (replyId == null) return null;
-    return this.store.getMappedMessageId(userId, fromSide, replyId);
+    const mappedTargetId =
+      replyId != null
+        ? await this.store.getMappedMessageId(userId, fromSide, replyId)
+        : null;
+
+    return {
+      preview: this.replyPreview(source),
+      quote: this.replyQuote(source),
+      mappedTargetId,
+    };
+  }
+
+  private buildReplyParameters(
+    mappedTargetId: number | null,
+    quote: string | null,
+  ): ReplyParameters | undefined {
+    if (mappedTargetId == null) return undefined;
+    const params: ReplyParameters = { message_id: mappedTargetId };
+    if (quote) params.quote = quote;
+    return params;
+  }
+
+  private formatQuotedBody(preview: string, body: string): string {
+    return `<blockquote>${escapeHtml(preview)}</blockquote>\n\n${escapeHtml(body)}`;
+  }
+
+  private replyPreview(msg: TgMessage): string {
+    if (msg.text) return msg.text.length > 120 ? `${msg.text.slice(0, 120)}…` : msg.text;
+    if (msg.caption) return msg.caption.length > 120 ? `${msg.caption.slice(0, 120)}…` : msg.caption;
+    if (msg.photo) return "[图片]";
+    if (msg.sticker) return "[贴纸]";
+    if (msg.video) return "[视频]";
+    if (msg.document) return "[文件]";
+    if (msg.voice) return "[语音]";
+    if (msg.audio) return "[音频]";
+    if (msg.video_note) return "[视频消息]";
+    if (msg.animation) return "[GIF]";
+    return "[消息]";
+  }
+
+  /** Exact substring for reply_parameters.quote (max 200 chars) */
+  private replyQuote(msg: TgMessage): string | null {
+    const text = msg.text ?? msg.caption;
+    if (!text) return null;
+    return text.slice(0, 200);
+  }
+
+  private isTextOnly(msg: TgMessage): boolean {
+    return (
+      !!msg.text &&
+      !msg.photo &&
+      !msg.video &&
+      !msg.document &&
+      !msg.audio &&
+      !msg.voice &&
+      !msg.sticker &&
+      !msg.animation &&
+      !msg.video_note
+    );
   }
 
   private getReplyMessageId(msg: TgMessage): number | null {
