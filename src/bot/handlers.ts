@@ -23,12 +23,18 @@ export async function handlePrivateMessage(
     }
 
     if (!bot.isVerificationValid(user)) {
-      await bot.api.sendMessage(from.id, bot.welcomeText(), { parse_mode: "HTML" });
+      await bot.api.sendMessage(from.id, bot.welcomeText(), {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
       await bot.sendVerificationChallenge(from.id);
       return;
     }
 
-    await bot.api.sendMessage(from.id, bot.welcomeText(), { parse_mode: "HTML" });
+    await bot.api.sendMessage(from.id, bot.welcomeText(), {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    });
     return;
   }
 

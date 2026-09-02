@@ -13,6 +13,7 @@ import {
 } from "../utils/format";
 
 const GENERAL_TOPIC_ID = 1;
+const PROJECT_URL = "https://github.com/cegle/relay-chat-bot";
 
 export class BotService {
   readonly api: TelegramApi;
@@ -238,7 +239,8 @@ export class BotService {
   }
 
   welcomeText(): string {
-    return this.env.WELCOME_MESSAGE || "你好！请发送消息，我们会尽快回复。";
+    const welcome = this.env.WELCOME_MESSAGE || "你好！请发送消息，我们会尽快回复。";
+    return `${welcome}\n\n该机器人来自<a href="${PROJECT_URL}">RelayChatBot</a>`;
   }
 
   isGeneralTopic(threadId?: number): boolean {
