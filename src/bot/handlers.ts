@@ -277,11 +277,18 @@ export async function handleCallback(
     { parse_mode: "HTML" },
   );
 
-  try {
-    await bot.api.sendMessage(
-      bot.groupId,
-      `✅ 用户 ${escapeHtml(bot.formatUserLabel(user))} 已通过验证`,
-      { message_thread_id: user.topicId, parse_mode: "HTML" },
-    );
-  } catch { /* ignore */ }
+  // Sync the first (new-session) card's verification status in place.
+  // Only cards created after this change have a recorded message ID;
+  // older cards are intentionally left untouched. If the edit fails
+  // (e.g. no recorded card), fall back to the previous separate notice.
+  const edited = await bot.syncSessionCard(user);
+  if (!edited) {
+    try {
+      await bot.api.sendMessage(
+        bot.groupId,
+        `✅ 用户 ${escapeHtml(bot.formatUserLabel(user))} 已通过验证`,
+        { message_thread_id: user.topicId, parse_mode: "HTML" },
+      );
+    } catch { /* ignore */ }
+  }
 }
