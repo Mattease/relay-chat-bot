@@ -75,6 +75,29 @@ export class TelegramApi {
     });
   }
 
+  /** Edit the text of a message sent by this bot. Returns false on failure
+   *  instead of throwing, so callers can fall back to sending a new message. */
+  async editMessageText(
+    chatId: number | string,
+    messageId: number,
+    text: string,
+    opts: {
+      parse_mode?: ParseMode;
+    } = {},
+  ): Promise<boolean> {
+    try {
+      await this.call("editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        ...opts,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   createForumTopic(
     chatId: number | string,
     name: string,
