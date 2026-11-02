@@ -6,6 +6,7 @@ import {
   handleGroupMessage,
   handlePrivateMessage,
 } from "./bot/handlers";
+import { adminCommands } from "./utils/format";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -121,6 +122,11 @@ async function handleAdmin(request: Request, env: Env, sub: string): Promise<Res
   }
 
   if (sub === "init" && request.method === "GET") {
+    // Admin-only command autocomplete in the management group (private
+    // users keep an empty menu). Best-effort: init must not fail on it.
+    try {
+      await bot.api.setAdminCommands(bot.groupId, adminCommands());
+    } catch { /* ignore */ }
     // Post help into General topic
     await bot.api.sendMessage(bot.groupId, [
       `🤖 <b>Relay Chat Bot 已就绪</b>`,
@@ -135,6 +141,11 @@ async function handleAdmin(request: Request, env: Env, sub: string): Promise<Res
     return json({ ok: true, groupId: bot.groupId });
   }
 
+  if (sub === "setCommands" && request.method === "GET") {
+    await bot.api.setAdminCommands(bot.groupId, adminCommands());
+    return json({ ok: true, message: "admin commands set (chat_administrators scope)" });
+  }
+
   if (sub === "me" && request.method === "GET") {
     const me = await bot.api.getMe();
     return json({ ok: true, me });
@@ -143,7 +154,7 @@ async function handleAdmin(request: Request, env: Env, sub: string): Promise<Res
   return json({
     ok: false,
     error: "unknown admin action",
-    available: ["registerWebhook", "unRegisterWebhook", "init", "me"],
+    available: ["registerWebhook", "unRegisterWebhook", "init", "me", "setCommands"],
   }, 404);
 }
 
