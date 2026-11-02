@@ -25,6 +25,10 @@ export interface UserRecord {
   blocked: boolean;
   closed: boolean;
   messageCount: number;
+  /** Message ID of the "new session" card in the management topic, if recorded.
+   *  Only set for sessions created after this field was added; older cards
+   *  intentionally stay untouched (no message ID was stored for them). */
+  sessionCardMessageId?: number;
 }
 
 export interface PendingVerify {
