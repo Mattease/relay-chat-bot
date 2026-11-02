@@ -3,6 +3,7 @@ import type { ReplyParameters, TgMessage, TgUser } from "../telegram/types";
 import { TelegramApi } from "../telegram/api";
 import { Store } from "../storage/kv";
 import {
+  adminCardKeyboard,
   boolEnv,
   displayName,
   escapeHtml,
@@ -68,7 +69,11 @@ export class BotService {
         ``,
         `回复本话题即可与用户对话。`,
       ].join("\n"),
-      { message_thread_id: user.topicId, parse_mode: "HTML" },
+      {
+        message_thread_id: user.topicId,
+        parse_mode: "HTML",
+        reply_markup: adminCardKeyboard(user.userId, false),
+      },
     );
     // Record the card message ID so its verification status can be edited
     // in place later. Older cards have no recorded ID and stay untouched.
@@ -94,7 +99,7 @@ export class BotService {
         ``,
         `回复本话题即可与用户对话。`,
       ].join("\n"),
-      { parse_mode: "HTML" },
+      { parse_mode: "HTML", reply_markup: adminCardKeyboard(user.userId, user.blocked) },
     );
   }
 
@@ -256,7 +261,11 @@ export class BotService {
     const card = await this.api.sendMessage(
       this.groupId,
       `♻️ 话题已重建\n\n${userCard(next)}`,
-      { message_thread_id: next.topicId, parse_mode: "HTML" },
+      {
+        message_thread_id: next.topicId,
+        parse_mode: "HTML",
+        reply_markup: adminCardKeyboard(next.userId, next.blocked),
+      },
     );
     next.sessionCardMessageId = card.message_id;
     await this.store.saveUser(next);
