@@ -83,6 +83,7 @@ export class TelegramApi {
     text: string,
     opts: {
       parse_mode?: ParseMode;
+      reply_markup?: InlineKeyboardMarkup;
     } = {},
   ): Promise<boolean> {
     try {
@@ -96,6 +97,19 @@ export class TelegramApi {
     } catch {
       return false;
     }
+  }
+
+  /** Set bot commands visible only to administrators of a chat.
+   *  Used so typing "/" in a management topic pops up the admin commands,
+   *  while private users keep an empty menu. */
+  setAdminCommands(
+    chatId: number | string,
+    commands: Array<{ command: string; description: string }>,
+  ): Promise<boolean> {
+    return this.call("setMyCommands", {
+      commands,
+      scope: { type: "chat_administrators", chat_id: chatId },
+    });
   }
 
   createForumTopic(
