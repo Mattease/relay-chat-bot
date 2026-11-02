@@ -60,7 +60,7 @@ export class BotService {
     await this.store.saveUser(user);
     await this.store.incrStat("users");
 
-    await this.api.sendMessage(
+    const card = await this.api.sendMessage(
       this.groupId,
       [
         `🆕 <b>新会话</b>`,
@@ -70,8 +70,32 @@ export class BotService {
       ].join("\n"),
       { message_thread_id: user.topicId, parse_mode: "HTML" },
     );
+    // Record the card message ID so its verification status can be edited
+    // in place later. Older cards have no recorded ID and stay untouched.
+    user.sessionCardMessageId = card.message_id;
+    await this.store.saveUser(user);
 
     return user;
+  }
+
+  /** Re-render the recorded "new session" card with the user's current
+   *  status (e.g. verified). Returns true if the edit succeeded, false if
+   *  there is no recorded card or the edit failed (caller should fall back
+   *  to sending a separate message). Only the status line changes in
+   *  practice, because userCard() is regenerated from the live record. */
+  async syncSessionCard(user: UserRecord): Promise<boolean> {
+    if (!user.sessionCardMessageId) return false;
+    return this.api.editMessageText(
+      this.groupId,
+      user.sessionCardMessageId,
+      [
+        `🆕 <b>新会话</b>`,
+        userCard(user),
+        ``,
+        `回复本话题即可与用户对话。`,
+      ].join("\n"),
+      { parse_mode: "HTML" },
+    );
   }
 
   isVerificationValid(user: UserRecord): boolean {
@@ -229,11 +253,13 @@ export class BotService {
       lastName: from.last_name,
     };
     await this.store.saveUser(next);
-    await this.api.sendMessage(
+    const card = await this.api.sendMessage(
       this.groupId,
       `♻️ 话题已重建\n\n${userCard(next)}`,
       { message_thread_id: next.topicId, parse_mode: "HTML" },
     );
+    next.sessionCardMessageId = card.message_id;
+    await this.store.saveUser(next);
     return next;
   }
 
