@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import type { TgCallbackQuery, TgMessage } from "../telegram/types";
 import { BotService } from "./service";
 import { isAdmin, adminHelp, userCard, escapeHtml, parseCommand } from "../utils/format";
+import { findSpamHit } from "../utils/spam";
 
 export async function handlePrivateMessage(
   env: Env,
@@ -57,6 +58,37 @@ export async function handlePrivateMessage(
     } else {
       await bot.api.sendMessage(from.id, "请先完成上方的人机验证，再发送消息。");
     }
+    return;
+  }
+
+  // Ad / spam filter: runs after verification, before any relay.
+  // On a hit the message is NOT relayed to the topic; the user is
+  // auto-blocked and the topic gets a notice carrying the original text,
+  // so a false positive can be undone with /unblock or the card button.
+  const spamHit = findSpamHit(msg.text ?? msg.caption);
+  if (spamHit) {
+    user.blocked = true;
+    await bot.store.saveUser(user);
+    await bot.syncSessionCard(user);
+    const original = (msg.text ?? msg.caption ?? "").slice(0, 500);
+    try {
+      await bot.api.sendMessage(
+        bot.groupId,
+        [
+          `🚫 <b>已自动拦截疑似广告并封禁用户</b> ${escapeHtml(bot.formatUserLabel(user))}`,
+          `命中规则: ${escapeHtml(spamHit.rule)}（${escapeHtml(spamHit.matched)}）`,
+          ``,
+          `原文:`,
+          escapeHtml(original),
+          ``,
+          `误判时用 /unblock 或卡片上的解封按钮恢复。`,
+        ].join("\n"),
+        { message_thread_id: user.topicId, parse_mode: "HTML" },
+      );
+    } catch { /* ignore */ }
+    try {
+      await bot.api.sendMessage(from.id, "你已被禁止使用本服务。");
+    } catch { /* ignore */ }
     return;
   }
 
@@ -137,6 +169,7 @@ export async function handleGroupMessage(
   if (command === "/block") {
     user.blocked = true;
     await bot.store.saveUser(user);
+    await bot.syncSessionCard(user);
     await bot.api.sendMessage(bot.groupId, `已封禁用户 ${escapeHtml(bot.formatUserLabel(user))}`, {
       message_thread_id: threadId,
       parse_mode: "HTML",
@@ -150,6 +183,7 @@ export async function handleGroupMessage(
   if (command === "/unblock") {
     user.blocked = false;
     await bot.store.saveUser(user);
+    await bot.syncSessionCard(user);
     await bot.api.sendMessage(bot.groupId, `已解封用户 ${escapeHtml(bot.formatUserLabel(user))}`, {
       message_thread_id: threadId,
       parse_mode: "HTML",
@@ -160,6 +194,7 @@ export async function handleGroupMessage(
   if (command === "/close") {
     user.closed = true;
     await bot.store.saveUser(user);
+    await bot.syncSessionCard(user);
     try {
       await bot.api.closeForumTopic(bot.groupId, threadId);
     } catch { /* ignore */ }
@@ -173,6 +208,7 @@ export async function handleGroupMessage(
     try {
       await bot.api.reopenForumTopic(bot.groupId, threadId);
     } catch { /* ignore */ }
+    await bot.syncSessionCard(user);
     await bot.api.sendMessage(bot.groupId, "会话已重新打开。", { message_thread_id: threadId });
     return;
   }
@@ -181,6 +217,7 @@ export async function handleGroupMessage(
     user.verified = false;
     user.verifiedAt = undefined;
     await bot.store.saveUser(user);
+    await bot.syncSessionCard(user);
     await bot.api.sendMessage(bot.groupId, "已重置验证，用户下次发消息需重新验证。", {
       message_thread_id: threadId,
     });
@@ -233,6 +270,65 @@ export async function handleCallback(
 ): Promise<void> {
   const data = cq.data ?? "";
   const from = cq.from;
+
+  // Admin shortcut buttons on the session card: admin:<action>:<userId>
+  if (data.startsWith("admin:")) {
+    if (!isAdmin(env, from.id)) {
+      await bot.api.answerCallbackQuery(cq.id, "仅管理员可用", true);
+      return;
+    }
+    const [, action, userIdStr] = data.split(":");
+    const target = await bot.store.getUser(Number(userIdStr));
+    if (!target) {
+      await bot.api.answerCallbackQuery(cq.id, "未找到该用户", true);
+      return;
+    }
+    if (action === "block") {
+      target.blocked = true;
+      await bot.store.saveUser(target);
+      await bot.syncSessionCard(target);
+      await bot.api.answerCallbackQuery(cq.id, "已封禁");
+      await bot.api.sendMessage(bot.groupId, `已封禁用户 ${escapeHtml(bot.formatUserLabel(target))}`, {
+        message_thread_id: target.topicId,
+        parse_mode: "HTML",
+      });
+      try {
+        await bot.api.sendMessage(target.userId, "你已被禁止使用本服务。");
+      } catch { /* ignore */ }
+      return;
+    }
+    if (action === "unblock") {
+      target.blocked = false;
+      await bot.store.saveUser(target);
+      await bot.syncSessionCard(target);
+      await bot.api.answerCallbackQuery(cq.id, "已解封");
+      await bot.api.sendMessage(bot.groupId, `已解封用户 ${escapeHtml(bot.formatUserLabel(target))}`, {
+        message_thread_id: target.topicId,
+        parse_mode: "HTML",
+      });
+      return;
+    }
+    if (action === "close") {
+      target.closed = true;
+      await bot.store.saveUser(target);
+      await bot.syncSessionCard(target);
+      await bot.api.answerCallbackQuery(cq.id, "会话已关闭");
+      try {
+        await bot.api.closeForumTopic(bot.groupId, target.topicId);
+      } catch { /* ignore */ }
+      return;
+    }
+    if (action === "info") {
+      await bot.api.answerCallbackQuery(cq.id);
+      await bot.api.sendMessage(bot.groupId, userCard(target), {
+        message_thread_id: target.topicId,
+        parse_mode: "HTML",
+      });
+      return;
+    }
+    await bot.api.answerCallbackQuery(cq.id);
+    return;
+  }
 
   if (!data.startsWith("verify:")) {
     await bot.api.answerCallbackQuery(cq.id);
