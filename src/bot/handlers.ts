@@ -101,6 +101,18 @@ export async function handlePrivateMessage(
   try {
     await bot.relayUserToTopic(user, msg);
   } catch (err) {
+    // Telegram sends no service message when a forum topic is deleted, so
+    // a deleted topic is only noticed when relaying to it fails with
+    // "message thread not found". Recreate the topic once and retry.
+    if (String(err).includes("message thread not found")) {
+      try {
+        const fresh = await bot.recreateTopic(user, from);
+        await bot.relayUserToTopic(fresh, msg);
+        return;
+      } catch (err2) {
+        console.error("relay retry after retopic failed", err2);
+      }
+    }
     console.error("relay user→topic failed", err);
     await bot.api.sendMessage(from.id, "消息转发失败，请稍后重试。");
   }
@@ -154,6 +166,35 @@ export async function handleGroupMessage(
         message_thread_id: threadId,
       });
     }
+    return;
+  }
+
+  // Forum topic service messages: map each to its corresponding session
+  // operation instead of relaying it. Service messages have no copyable
+  // content, so relaying them always fails with "the message can't be
+  // copied". This also keeps the session state in sync when the admin
+  // closes/reopens a topic from the Telegram UI instead of /close.
+  if (msg.forum_topic_closed) {
+    if (!user.closed) {
+      user.closed = true;
+      await bot.store.saveUser(user);
+    }
+    await bot.syncSessionCard(user);
+    return;
+  }
+  if (msg.forum_topic_reopened) {
+    if (user.closed) {
+      user.closed = false;
+      await bot.store.saveUser(user);
+    }
+    await bot.syncSessionCard(user);
+    return;
+  }
+  if (msg.forum_topic_edited) {
+    // Topic renamed from the UI; no session state to update.
+    return;
+  }
+  if (msg.new_chat_members || msg.left_chat_member) {
     return;
   }
 
@@ -255,9 +296,14 @@ export async function handleGroupMessage(
     await bot.relayTopicToUser(user, msg);
   } catch (err) {
     console.error("relay topic→user failed", err);
+    const detail = String(err);
+    const blocked =
+      detail.includes("bot was blocked by the user") || detail.includes("Forbidden");
     await bot.api.sendMessage(
       bot.groupId,
-      `⚠️ 转发失败：用户可能已停用机器人。\n<code>${escapeHtml(String(err))}</code>`,
+      blocked
+        ? `⚠️ 转发失败：用户已停用机器人。`
+        : `⚠️ 转发失败：\n<code>${escapeHtml(detail)}</code>`,
       { message_thread_id: threadId, parse_mode: "HTML" },
     );
   }
