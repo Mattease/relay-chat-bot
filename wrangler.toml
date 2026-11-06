@@ -5,8 +5,8 @@ compatibility_date = "2025-02-24"
 # KV：用户 ↔ 话题映射、验证状态、封禁列表
 [[kv_namespaces]]
 binding = "KV"
-id = "6d8e0375ae344d359b4d08c5d7f51e33"
-preview_id = "6d8e0375ae344d359b4d08c5d7f51e33"
+id = "a5cd410a713b442cac0cbd2142aa438a"
+preview_id = "a5cd410a713b442cac0cbd2142aa438a"
 
 # 非敏感配置（也可用 wrangler secret / dashboard 覆盖）
 [vars]
