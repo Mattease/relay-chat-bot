@@ -60,6 +60,9 @@ export interface TgMessage {
   entities?: Array<{ type: string; offset: number; length: number }>;
   is_topic_message?: boolean;
   forum_topic_created?: { name: string; icon_color: number };
+  forum_topic_closed?: Record<string, never>;
+  forum_topic_reopened?: Record<string, never>;
+  forum_topic_edited?: { name?: string; icon_custom_emoji_id?: string };
   new_chat_members?: TgUser[];
   left_chat_member?: TgUser;
   sticker?: unknown;
